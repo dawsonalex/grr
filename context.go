@@ -22,9 +22,17 @@ func (e ErrContext) ErrorContext() map[string]map[string]any {
 
 // AddContext sets a named context block on the error. val should be a flat
 // map of string keys to values.
+//
+// AddContext copies the internal map before writing so that value copies of
+// the parent error struct remain independent — this is necessary because
+// domain helper methods (e.g. ForUser) use value receivers, meaning the
+// embedded ErrContext is copied by value but its internal map is shared by
+// reference until a write occurs.
 func (e *ErrContext) AddContext(key string, val map[string]any) {
-	if e.data == nil {
-		e.data = make(map[string]map[string]any)
+	copied := make(map[string]map[string]any, len(e.data)+1)
+	for k, v := range e.data {
+		copied[k] = v
 	}
-	e.data[key] = val
+	copied[key] = val
+	e.data = copied
 }

@@ -19,9 +19,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/getsentry/sentry-go"
-
-	"github.com/your-org/errs"
+	"github.com/dawsonalex/grr"
 )
 
 // ctxKey is the unexported type for context keys set by this package,
