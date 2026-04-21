@@ -1,4 +1,4 @@
-# errs
+# grr
 
 A lightweight error package providing stack traces, structured Sentry context,
 and fingerprinting for use with a boundary-based error reporting strategy.
