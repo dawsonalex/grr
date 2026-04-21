@@ -1,11 +1,11 @@
 # grr
 
-A lightweight error package providing stack traces, structured Sentry context,
-and fingerprinting for use with a boundary-based error reporting strategy.
+A lightweight error package providing stack traces, structured context, and
+fingerprinting for use with a boundary-based error reporting strategy.
 
-The package has no external dependencies. Sentry integration lives in your
-reporting layer — this package only defines the interfaces and embeddable types
-that errors use to contribute data to it.
+The package has no external dependencies. Reporting tool integration lives in
+your reporting layer — this package only defines the interfaces and embeddable
+types that errors use to contribute data to it.
 
 ---
 
@@ -162,86 +162,9 @@ if len(items) == 0 {
 
 ---
 
-## The reporting layer
-
-Your reporting package consumes the three interfaces to build a Sentry event.
-It is the only place in your codebase that imports `sentry-go`.
-
-A minimal implementation:
-
-```go
-func Capture(ctx context.Context, err error) {
-    sentry.WithScope(func(scope *sentry.Scope) {
-        attachRequestIDs(ctx, scope)
-        applyContext(scope, err)
-        applyFingerprint(scope, err)
-
-        event := sentry.NewEvent()
-        event.Exception = []sentry.Exception{{
-            Type:       fmt.Sprintf("%T", err),
-            Value:      err.Error(),
-            Stacktrace: buildStacktrace(err),
-        }}
-
-        sentry.CaptureEvent(event)
-    })
-}
-
-func applyContext(scope *sentry.Scope, err error) {
-    for e := err; e != nil; e = errors.Unwrap(e) {
-        if sc, ok := e.(errs.Contexter); ok {
-            for key, ctx := range sc.ErrorContext() {
-                scope.SetContext(key, ctx)
-            }
-        }
-    }
-}
-
-func applyFingerprint(scope *sentry.Scope, err error) {
-    var fingerprint []string
-    for e := err; e != nil; e = errors.Unwrap(e) {
-        if sf, ok := e.(errs.Fingerprinter); ok {
-            fingerprint = append(fingerprint, sf.Fingerprint()...)
-        }
-    }
-    if len(fingerprint) > 0 {
-        scope.SetFingerprint(fingerprint)
-    }
-}
-
-func buildStacktrace(err error) *sentry.Stacktrace {
-    for e := err; e != nil; e = errors.Unwrap(e) {
-        if st, ok := e.(errs.StackTracer); ok {
-            pcs := st.StackTrace()
-            frames := make([]sentry.Frame, 0, len(pcs))
-            iter := runtime.CallersFrames(pcs)
-            for {
-                f, more := iter.Next()
-                frames = append(frames, sentry.Frame{
-                    Function: f.Function,
-                    AbsPath:  f.File,
-                    Lineno:   f.Line,
-                })
-                if !more {
-                    break
-                }
-            }
-            slices.Reverse(frames)
-            return &sentry.Stacktrace{Frames: frames}
-        }
-    }
-    return nil
-}
-```
-
-Call `Capture` at each service boundary — HTTP middleware, queue consumer loop,
-background job wrapper — not in the middle of business logic.
-
----
-
 ## Errors without a dedicated type
 
 Not every error warrants a named type. Use `errs.Wrap` for errors crossing
 package boundaries, and `errs.New` for simple root errors. Both capture a stack
 trace. Neither contributes context or fingerprint data unless you add it — the
-reporting layer will fall back to Sentry's default grouping in that case.
+reporting layer will fall back to its default grouping in that case.
