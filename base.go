@@ -83,3 +83,8 @@ func (b Base) Error() string {
 func (b Base) Unwrap() error {
 	return b.cause
 }
+
+func (b Base) WithContext(key string, ctx map[string]any) Base {
+	b.AddContext(key, ctx)
+	return b
+}
