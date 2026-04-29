@@ -168,3 +168,54 @@ Not every error warrants a named type. Use `errs.Wrap` for errors crossing
 package boundaries, and `errs.New` for simple root errors. Both capture a stack
 trace. Neither contributes context or fingerprint data unless you add it — the
 reporting layer will fall back to its default grouping in that case.
+
+---
+
+## Definitions
+
+`Def` is a lighter alternative to the full typed-error pattern. Rather than
+declaring a struct and a constructor, you declare a package-level definition:
+
+```go
+var ErrUserNotFound = errs.Define("User Not Found")
+```
+
+Then call `New` or `Wrap` on it directly at the call site:
+
+```go
+return ErrUserNotFound.New("no user with that ID")
+return ErrUserNotFound.Wrap(err)
+```
+
+The stack is captured at the `New`/`Wrap` call, not inside a constructor, so
+the trace is always accurate without needing `NewSkip`/`WrapSkip`.
+
+### Checking definitions
+
+Use `Is` on the definition to test whether an error in a chain originated from
+it:
+
+```go
+if ErrUserNotFound.Is(err) {
+    // handle not-found case
+}
+```
+
+Identity is **pointer-based**: two `Define` calls with the same name string are
+treated as distinct error classes. This means the check is always unambiguous
+even if two packages coincidentally use the same name.
+
+### When to use Def vs a typed struct
+
+Use `Def` when you need a named, matchable error class but have no need for
+domain-specific helper methods. Use a typed struct embedding `Base` when the
+error carries structured context built up through chainable helpers, or when
+callers need to extract data from the error via type assertion.
+
+| | `Def` | Typed struct |
+|---|---|---|
+| Stack captured at call site | yes | requires `WrapSkip` in constructor |
+| Matchable by class | yes (`Def.Is`) | yes (`errors.As`) |
+| Named error class label | yes (the `Define` name) | yes (Go type name) |
+| Chainable context helpers | no | yes |
+| Boilerplate | none | struct + constructor |
