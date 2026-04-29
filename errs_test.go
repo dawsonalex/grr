@@ -222,9 +222,15 @@ func TestBase_NilCauseUnwrapsToNil(t *testing.T) {
 
 // -- Package-level Wrap / New -------------------------------------------------
 
-func TestWrap_NilReturnsNil(t *testing.T) {
-	if Wrap(nil, "msg") != nil {
-		t.Error("expected Wrap(nil) to return nil")
+func TestWrap_NilFallsBackToNew(t *testing.T) {
+	// Wrap with a nil cause falls back to New(msg): the result carries the
+	// message and no wrapped cause.
+	err := Wrap(nil, "msg")
+	if err.Error() != "msg" {
+		t.Errorf("expected Wrap(nil) to produce message %q, got %q", "msg", err.Error())
+	}
+	if errors.Unwrap(err) != nil {
+		t.Error("expected Wrap(nil) to produce no wrapped cause")
 	}
 }
 
@@ -242,12 +248,12 @@ func TestWrap_WrapsError(t *testing.T) {
 
 func TestWrap_ExcludesItselfFromStack(t *testing.T) {
 	err := Wrap(errors.New("cause"), "msg")
-	assertNoFrame(t, err.(StackTracer).StackTrace(), "errs.Wrap")
+	assertNoFrame(t, err.StackTrace(), "errs.Wrap")
 }
 
 func TestWrap_FirstFrameIsCaller(t *testing.T) {
 	err := Wrap(errors.New("cause"), "msg")
-	first := firstFrame(err.(StackTracer).StackTrace())
+	first := firstFrame(err.StackTrace())
 	if !strings.Contains(first, "TestWrap_FirstFrameIsCaller") {
 		t.Errorf("expected first frame to be the test function, got %q", first)
 	}
@@ -262,7 +268,7 @@ func TestNew_CreatesError(t *testing.T) {
 
 func TestNew_ExcludesItselfFromStack(t *testing.T) {
 	err := New("msg")
-	assertNoFrame(t, err.(StackTracer).StackTrace(), "errs.New")
+	assertNoFrame(t, err.StackTrace(), "errs.New")
 }
 
 // -- Typed error integration --------------------------------------------------
@@ -332,6 +338,95 @@ func TestTypedError_ChainedHelpersAreIndependent(t *testing.T) {
 	}
 	if err2.ErrorContext()["order"]["id"] != "order-2" {
 		t.Errorf("err2 context wrong: %v", err2.ErrorContext()["order"]["id"])
+	}
+}
+
+// -- Def ----------------------------------------------------------------------
+
+func TestDef_IsTrueForOwnError(t *testing.T) {
+	d := Define("service_error")
+	err := d.New("something failed")
+	if !d.Is(err) {
+		t.Error("expected Def.Is to return true for an error it created")
+	}
+}
+
+func TestDef_IsTrueForWrappedOwnError(t *testing.T) {
+	d := Define("service_error")
+	cause := errors.New("root")
+	err := d.Wrap(cause)
+	if !d.Is(err) {
+		t.Error("expected Def.Is to return true for a Wrap error it created")
+	}
+}
+
+func TestDef_IsTrueDeepInChain(t *testing.T) {
+	d := Define("service_error")
+	inner := d.New("inner")
+	chained := Wrap(inner, "outer")
+	if !d.Is(chained) {
+		t.Error("expected Def.Is to return true when own error is deeper in chain")
+	}
+}
+
+func TestDef_IsFalseForDifferentDef(t *testing.T) {
+	d1 := Define("service_error")
+	d2 := Define("service_error") // same name, different pointer
+	err := d1.New("something failed")
+	if d2.Is(err) {
+		t.Error("expected Def.Is to return false for an error created by a different Def with the same name")
+	}
+}
+
+func TestDef_IsFalseForPlainNew(t *testing.T) {
+	d := Define("service_error")
+	err := New("something failed")
+	if d.Is(err) {
+		t.Error("expected Def.Is to return false for a plain grr.New error")
+	}
+}
+
+func TestDef_IsFalseForPlainNewBase(t *testing.T) {
+	d := Define("service_error")
+	err := NewBase("service_error").New("something failed")
+	if d.Is(err) {
+		t.Error("expected Def.Is to return false for an error created via NewBase (no def pointer)")
+	}
+}
+
+// -- Base.NewSkip / Base.WrapSkip ---------------------------------------------
+
+func TestBase_WrapSkip_ZeroSameasWrap(t *testing.T) {
+	b := NewBase("test").WrapSkip(errors.New("cause"), 0)
+	first := firstFrame(b.StackTrace())
+	if !strings.Contains(first, "TestBase_WrapSkip_ZeroSameasWrap") {
+		t.Errorf("expected first frame to be test function, got %q", first)
+	}
+}
+
+// wrapSkipConstructor simulates a typed constructor that delegates to WrapSkip
+// with skip=1 so the trace lands at the constructor's caller, not here.
+func wrapSkipConstructor(cause error) Base {
+	return NewBase("test").WrapSkip(cause, 1)
+}
+
+func TestBase_WrapSkip_OneSkipsConstructor(t *testing.T) {
+	err := wrapSkipConstructor(errors.New("root"))
+	first := firstFrame(err.StackTrace())
+	if !strings.Contains(first, "TestBase_WrapSkip_OneSkipsConstructor") {
+		t.Errorf("expected first frame to be the test function (constructor's caller), got %q", first)
+	}
+}
+
+func newSkipConstructor(msg string) Base {
+	return NewBase("test").NewSkip(msg, 1)
+}
+
+func TestBase_NewSkip_OneSkipsConstructor(t *testing.T) {
+	err := newSkipConstructor("something failed")
+	first := firstFrame(err.StackTrace())
+	if !strings.Contains(first, "TestBase_NewSkip_OneSkipsConstructor") {
+		t.Errorf("expected first frame to be the test function (constructor's caller), got %q", first)
 	}
 }
 

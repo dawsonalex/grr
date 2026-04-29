@@ -124,15 +124,16 @@ func attachFingerprint(scope *sentry.Scope, err error) {
 	}
 }
 
-// attachErrorChainTag sets an "error_chain" tag showing the Go types of each
-// layer in the unwrap chain. Useful for searching and filtering in Sentry when
-// the same root cause is wrapped by different error types across call paths.
+// attachErrorChainTag sets an "error_chain" tag showing the type of each layer
+// in the unwrap chain. Useful for searching and filtering in Sentry when the
+// same root cause is wrapped by different error types across call paths.
+// Errors created via Define show their defined name; others show their Go type.
 //
-// Example value: "UserLoginError → errs.Base → *pgconn.PgError"
+// Example value: "User Not Found → *pgconn.PgError"
 func attachErrorChainTag(scope *sentry.Scope, err error) {
 	var parts []string
 	for e := err; e != nil; e = errors.Unwrap(e) {
-		parts = append(parts, fmt.Sprintf("%T", e))
+		parts = append(parts, errorTypeName(e))
 	}
 	if len(parts) > 0 {
 		scope.SetTag("error_chain", strings.Join(parts, " → "))
@@ -152,7 +153,7 @@ func buildExceptions(err error) []sentry.Exception {
 	for e := err; e != nil; e = errors.Unwrap(e) {
 		if st, ok := e.(errs.StackTracer); ok {
 			exceptions = append(exceptions, sentry.Exception{
-				Type:       fmt.Sprintf("%T", e),
+				Type:       errorTypeName(e),
 				Value:      e.Error(),
 				Stacktrace: buildStacktrace(st.StackTrace()),
 			})
@@ -162,7 +163,7 @@ func buildExceptions(err error) []sentry.Exception {
 	if len(exceptions) == 0 {
 		// Plain error with no stack trace — still capture type and message.
 		return []sentry.Exception{{
-			Type:  fmt.Sprintf("%T", err),
+			Type:  errorTypeName(err),
 			Value: err.Error(),
 		}}
 	}
@@ -170,6 +171,18 @@ func buildExceptions(err error) []sentry.Exception {
 	// Sentry renders exception chains innermost-first.
 	slices.Reverse(exceptions)
 	return exceptions
+}
+
+// errorTypeName returns the Def name for errors created via Define, and the
+// Go type name (via %T) for everything else.
+func errorTypeName(err error) string {
+	type typeNamer interface{ TypeName() string }
+	if tn, ok := err.(typeNamer); ok {
+		if name := tn.TypeName(); name != "" {
+			return name
+		}
+	}
+	return fmt.Sprintf("%T", err)
 }
 
 // buildStacktrace converts a slice of program counters (as returned by

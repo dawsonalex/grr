@@ -32,6 +32,7 @@ type Base struct {
 	ErrContext
 	cause error
 	msg   string
+	def   *Def
 }
 
 // NewBase returns a Base initialised with the given fingerprint segments, with
@@ -84,7 +85,42 @@ func (b Base) Unwrap() error {
 	return b.cause
 }
 
+// TypeName returns the name from the Def that created this error, if any.
+// Returns empty string for errors not created via Define.
+func (b Base) TypeName() string {
+	if b.def != nil {
+		return b.def.name
+	}
+	return ""
+}
+
 func (b Base) WithContext(key string, ctx map[string]any) Base {
 	b.AddContext(key, ctx)
+	return b
+}
+
+// NewSkip returns a copy of b with msg set and the stack captured skip+1 frames
+// above NewSkip itself. Use inside typed constructors that wrap Base.New to
+// push the captured frame up to the constructor's caller:
+//
+//	func NewServiceError(msg string) ServiceError {
+//	    return ServiceError{errService.NewSkip(msg, 1)}
+//	}
+func (b Base) NewSkip(msg string, skip int) Base {
+	b.ErrStack = CaptureStack(skip + 1)
+	b.msg = msg
+	return b
+}
+
+// WrapSkip returns a copy of b with cause set and the stack captured skip+1
+// frames above WrapSkip itself. Use inside typed constructors that wrap
+// Base.Wrap to push the captured frame up to the constructor's caller:
+//
+//	func NewServiceError(cause error) ServiceError {
+//	    return ServiceError{errService.WrapSkip(cause, 1)}
+//	}
+func (b Base) WrapSkip(cause error, skip int) Base {
+	b.ErrStack = CaptureStack(skip + 1)
+	b.cause = cause
 	return b
 }
