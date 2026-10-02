@@ -1,15 +1,51 @@
-// Package sentry provides a Sentry reporting layer for the errs package.
-// It is kept separate from the core errs package so that services which do
-// not use Sentry do not incur the dependency.
-//
-// Usage at a service boundary:
-//
-//	eventID := sentry.Report(ctx, err)
-//	logger.Error("request failed",
-//	    slog.String("error", err.Error()),
-//	    slog.String("event_id", eventID),
-//	)
-package sentry
+# Reporting to Sentry
+
+`errs` has no dependency on Sentry. Instead, errors contribute data through
+small interfaces, and a reporting layer in your service reads those interfaces
+and builds the event. This page shows one way to write that layer for
+[sentry-go](https://github.com/getsentry/sentry-go).
+
+Each interface maps onto part of a Sentry event:
+
+| Interface | Implemented by | Becomes |
+|---|---|---|
+| `errs.StackTracer` | `Base`, `ErrStack` | A chained exception, one per layer, each with its stack trace |
+| `errs.Fingerprinter` | `Base`, `ErrFingerprint` | The event fingerprint (grouping key) |
+| `errs.Contexter` | `Base`, `ErrContext` | Named context blocks in the event UI |
+| `TypeName() string` | `Base` created via a `Def` | The exception type and the `error_chain` tag |
+
+Plain errors from the standard library or third-party packages still get
+reported: they appear in the `error_chain` tag, and if nothing in the chain has a
+stack trace, the event falls back to a single exception with the type and
+message.
+
+## Usage
+
+Report once, at a boundary: the HTTP handler, queue consumer or job runner where
+a unit of work ends. Log the returned event ID next to the error so log lines and
+Sentry events can be matched up.
+
+```go
+ctx = reporting.WithRequestID(ctx, r.Header.Get("X-Request-ID"))
+
+if err := svc.Handle(ctx, req); err != nil {
+	eventID := reporting.Report(ctx, err)
+	logger.Error("request failed",
+		slog.String("error", err.Error()),
+		slog.String("event_id", eventID),
+	)
+}
+```
+
+## The reporting layer
+
+Copy this into your service (it assumes `sentry.Init` has already been called).
+The Sentry import is aliased explicitly to keep it distinct from your own
+package names.
+
+```go
+// Package reporting sends errors built with errs to Sentry.
+package reporting
 
 import (
 	"context"
@@ -19,7 +55,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/dawsonalex/grr"
+	errs "github.com/dawsonalex/grr"
+	sentry "github.com/getsentry/sentry-go"
 )
 
 // ctxKey is the unexported type for context keys set by this package,
@@ -43,21 +80,8 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestIDKey, id)
 }
 
-// Report captures err as a Sentry event and returns the event ID. The caller
-// should include the event ID in any log output so that log lines and Sentry
-// events can be correlated.
-//
-// Report walks the full error chain and:
-//   - attaches correlation/request IDs from ctx as searchable tags
-//   - attaches structured context blocks from errors implementing errs.Contexter
-//   - sets the fingerprint from errors implementing errs.Fingerprinter, falling
-//     back to Sentry's default grouping if none is found
-//   - builds a chained exception list from errors implementing errs.StackTracer,
-//     with each layer appearing as a separate exception in the Sentry UI
-//   - falls back gracefully for plain errors, capturing type and message with
-//     no stack trace
-//
-// Returns an empty string if err is nil or the event was not sent.
+// Report captures err as a Sentry event and returns the event ID. It returns
+// an empty string if err is nil or the event was not sent.
 func Report(ctx context.Context, err error) string {
 	if err == nil {
 		return ""
@@ -93,10 +117,8 @@ func attachRequestTags(ctx context.Context, scope *sentry.Scope) {
 	}
 }
 
-// attachErrorContext walks the error chain and applies structured context
-// blocks from any error implementing errs.Contexter. Each block appears as
-// a named section in the Sentry event UI. Outer layers in the chain can
-// overwrite keys set by inner layers.
+// attachErrorContext applies the context blocks from every layer implementing
+// errs.Contexter. Outer layers overwrite keys set by inner layers.
 func attachErrorContext(scope *sentry.Scope, err error) {
 	for e := err; e != nil; e = errors.Unwrap(e) {
 		if c, ok := e.(errs.Contexter); ok {
@@ -107,11 +129,9 @@ func attachErrorContext(scope *sentry.Scope, err error) {
 	}
 }
 
-// attachFingerprint walks the error chain and accumulates fingerprint segments
-// from any error implementing errs.Fingerprinter. Segments are concatenated
-// across layers so each layer contributes to the final grouping key
-// independently. Falls back to Sentry's default grouping if no segments
-// are found.
+// attachFingerprint concatenates the fingerprint segments from every layer
+// implementing errs.Fingerprinter. With no segments, Sentry's default grouping
+// is used.
 func attachFingerprint(scope *sentry.Scope, err error) {
 	var segments []string
 	for e := err; e != nil; e = errors.Unwrap(e) {
@@ -124,12 +144,9 @@ func attachFingerprint(scope *sentry.Scope, err error) {
 	}
 }
 
-// attachErrorChainTag sets an "error_chain" tag showing the type of each layer
-// in the unwrap chain. Useful for searching and filtering in Sentry when the
-// same root cause is wrapped by different error types across call paths.
-// Errors created via Define show their defined name; others show their Go type.
-//
-// Example value: "User Not Found → *pgconn.PgError"
+// attachErrorChainTag sets an "error_chain" tag naming each layer of the
+// chain, e.g. "User Not Found → *pgconn.PgError". This makes it possible to
+// filter on a root cause that different call paths wrap differently.
 func attachErrorChainTag(scope *sentry.Scope, err error) {
 	var parts []string
 	for e := err; e != nil; e = errors.Unwrap(e) {
@@ -140,13 +157,9 @@ func attachErrorChainTag(scope *sentry.Scope, err error) {
 	}
 }
 
-// buildExceptions walks the error chain and constructs a Sentry exception for
-// each layer that implements errs.StackTracer. If no layer has a stack trace
-// (e.g. a plain stdlib error), a single exception is returned with no
-// stacktrace so the error is still captured.
-//
-// Sentry renders exceptions innermost-first, so the slice is reversed before
-// returning.
+// buildExceptions builds one Sentry exception per layer implementing
+// errs.StackTracer, falling back to a single exception without a stack trace
+// when no layer has one.
 func buildExceptions(err error) []sentry.Exception {
 	var exceptions []sentry.Exception
 
@@ -161,7 +174,6 @@ func buildExceptions(err error) []sentry.Exception {
 	}
 
 	if len(exceptions) == 0 {
-		// Plain error with no stack trace — still capture type and message.
 		return []sentry.Exception{{
 			Type:  errorTypeName(err),
 			Value: err.Error(),
@@ -174,7 +186,7 @@ func buildExceptions(err error) []sentry.Exception {
 }
 
 // errorTypeName returns the Def name for errors created via Define, and the
-// Go type name (via %T) for everything else.
+// Go type name for everything else.
 func errorTypeName(err error) string {
 	type typeNamer interface{ TypeName() string }
 	if tn, ok := err.(typeNamer); ok {
@@ -185,9 +197,8 @@ func errorTypeName(err error) string {
 	return fmt.Sprintf("%T", err)
 }
 
-// buildStacktrace converts a slice of program counters (as returned by
-// errs.StackTracer) into a Sentry stacktrace. Frames are reversed so the
-// innermost call appears at the top of the trace in the Sentry UI.
+// buildStacktrace converts program counters from errs.StackTracer into a
+// Sentry stacktrace, ordered so the innermost call is at the top.
 func buildStacktrace(pcs []uintptr) *sentry.Stacktrace {
 	if len(pcs) == 0 {
 		return nil
@@ -210,3 +221,11 @@ func buildStacktrace(pcs []uintptr) *sentry.Stacktrace {
 	slices.Reverse(frames)
 	return &sentry.Stacktrace{Frames: frames}
 }
+```
+
+## Limitations
+
+The chain is walked with `errors.Unwrap`, which follows a single cause. Errors
+that wrap several causes (`errors.Join`, or `fmt.Errorf` with more than one
+`%w`) stop the walk at that layer. If you rely on those, replace the loops with a
+traversal that also checks for `Unwrap() []error`.

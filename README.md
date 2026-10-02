@@ -23,6 +23,8 @@ single event.
 This means your domain and service layers have no knowledge of Sentry. They
 only import `errs`.
 
+See [examples/sentry.md](examples/sentry.md) for an example reporting layer.
+
 ### Embeddable types
 
 `Base` is the primary embeddable for typed error structs. It combines stack

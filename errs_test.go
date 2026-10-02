@@ -208,7 +208,7 @@ func TestBase_UnwrapReturnsCause(t *testing.T) {
 	cause := errors.New("root")
 	b := NewBase().Wrap(cause)
 
-	if errors.Unwrap(b) != cause {
+	if errors.Unwrap(b) != cause { //nolint:errorlint // asserting the direct cause, not chain membership
 		t.Error("expected Unwrap to return the wrapped cause")
 	}
 }
